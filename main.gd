@@ -9,8 +9,56 @@ extends Control
 # Bump this on every export. It is shown on screen so you can tell whether
 # the phone is running the build you just deployed or an older cached one --
 # the classic PWA failure is a service worker serving yesterday's files.
-const BUILD := 1
+const BUILD := 2
 const SAVE_PATH := "user://save.cfg"
+
+# Build 2 diagnostics. Build 1 only asked "is a service worker controlling
+# this page?", which read "no" on the phone even after four real relaunches --
+# an inference, not a fact. This asks the browser directly: is a worker
+# registered and in what state, does calling register() succeed (and if not,
+# with what error), and which files are actually sitting in the offline cache.
+#
+# Those browser APIs are asynchronous (they return Promises), but
+# JavaScriptBridge.eval returns immediately. So the script stores its answers
+# in window.__pwaDiag as they arrive, and _refresh() reads them back later.
+# Plain ES5-style JS and no backslashes, so GDScript's string escaping
+# cannot mangle it.
+const DIAG_JS := """
+(function () {
+	var d = window.__pwaDiag = {reg: 'checking...', register: 'checking...', cache: 'checking...'};
+	var m = navigator.userAgent.match(/OS [0-9_]+/);
+	d.ios = m ? m[0].replace(/_/g, '.') : 'unknown';
+	if (!('serviceWorker' in navigator)) {
+		d.reg = 'API missing';
+		d.register = 'API missing';
+	} else {
+		navigator.serviceWorker.getRegistration().then(function (r) {
+			if (!r) { d.reg = 'none'; return; }
+			var s = [];
+			if (r.active) { s.push('active'); }
+			if (r.waiting) { s.push('waiting'); }
+			if (r.installing) { s.push('installing'); }
+			d.reg = (s.join('+') || 'no worker') + ' @ ' + r.scope;
+		}).catch(function (e) { d.reg = 'error: ' + e; });
+		navigator.serviceWorker.register('index.service.worker.js').then(function () {
+			d.register = 'ok';
+		}).catch(function (e) { d.register = 'FAILED: ' + e; });
+	}
+	if (!('caches' in window)) {
+		d.cache = 'API missing';
+	} else {
+		caches.keys().then(function (keys) {
+			return Promise.all(keys.map(function (k) {
+				return caches.open(k).then(function (c) { return c.keys(); }).then(function (reqs) {
+					return reqs.map(function (q) { return q.url.split('/').pop(); }).join(', ');
+				});
+			}));
+		}).then(function (lists) {
+			d.cache = lists.length ? lists.join(' | ') : 'empty';
+		}).catch(function (e) { d.cache = 'error: ' + e; });
+	}
+})();
+"""
 
 var _launches := 0
 var _taps := 0
@@ -23,8 +71,15 @@ var _beep: AudioStreamPlayer
 
 func _ready() -> void:
 	var t := Theme.new()
-	t.default_font_size = 34
+	t.default_font_size = 28  # smaller than build 1: the cache listing is long
 	theme = t
+
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval(DIAG_JS, true)
+		# The Promises above usually settle within a second; refresh twice so
+		# the answers appear without needing the Refresh button.
+		get_tree().create_timer(1.5).timeout.connect(_refresh)
+		get_tree().create_timer(5.0).timeout.connect(_refresh)
 
 	# Count this launch and save immediately. If the number keeps climbing
 	# across relaunches -- including offline ones -- saves are persisting.
@@ -118,8 +173,17 @@ func _refresh() -> void:
 		# The service worker is the piece that serves cached files offline.
 		# It only takes control from the SECOND load onward, so "no" on the
 		# very first visit is expected.
-		lines.append("Offline cache active: " + _yes_no(_js_bool(
+		lines.append("Worker controls page: " + _yes_no(_js_bool(
 			"!!(navigator.serviceWorker && navigator.serviceWorker.controller)")))
+		var d := _diag()
+		lines.append("iOS: " + str(d.get("ios", "?")))
+		lines.append("Worker registration: " + str(d.get("reg", "?")))
+		lines.append("register() call: " + str(d.get("register", "?")))
+		var cache_s := str(d.get("cache", "?"))
+		# index.wasm is the 37 MB engine; without it in the cache, an offline
+		# launch can only show Godot's "you need a connection" page.
+		lines.append("ENGINE FILE CACHED: " + _yes_no(cache_s.contains("index.wasm")))
+		lines.append("Cache: " + cache_s)
 	else:
 		lines.append("Desktop run -- browser checks skipped")
 	lines.append("Saves persistent: " + _yes_no(OS.is_userfs_persistent()))
@@ -148,6 +212,18 @@ func _js_bool(expr: String) -> bool:
 	# broken expression reads as "no" instead of crashing the comparison.
 	var r: Variant = JavaScriptBridge.eval(expr, true)
 	return r is bool and r
+
+
+func _diag() -> Dictionary:
+	# window.__pwaDiag comes back as a JSON string; anything unexpected
+	# (script not run yet, parse failure) yields an empty Dictionary, which
+	# displays as "?" rather than crashing.
+	var raw: Variant = JavaScriptBridge.eval("JSON.stringify(window.__pwaDiag || {})", true)
+	if raw is String:
+		var parsed: Variant = JSON.parse_string(raw)
+		if parsed is Dictionary:
+			return parsed
+	return {}
 
 
 func _yes_no(b: bool) -> String:
