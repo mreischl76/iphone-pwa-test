@@ -9,7 +9,7 @@ extends Control
 # Bump this on every export. It is shown on screen so you can tell whether
 # the phone is running the build you just deployed or an older cached one --
 # the classic PWA failure is a service worker serving yesterday's files.
-const BUILD := 2
+const BUILD := 3
 const SAVE_PATH := "user://save.cfg"
 
 # Build 2 diagnostics. Build 1 only asked "is a service worker controlling
@@ -175,6 +175,11 @@ func _refresh() -> void:
 		# very first visit is expected.
 		lines.append("Worker controls page: " + _yes_no(_js_bool(
 			"!!(navigator.serviceWorker && navigator.serviceWorker.controller)")))
+		# Confirms or refutes the _js_bool() diagnosis: what Godot type does a
+		# plain JS `true` arrive as? "bool" would mean the build 1-2 bug lay
+		# elsewhere.
+		var probe: Variant = JavaScriptBridge.eval("true", true)
+		lines.append("JS true arrives as: %s (%s)" % [type_string(typeof(probe)), str(probe)])
 		var d := _diag()
 		lines.append("iOS: " + str(d.get("ios", "?")))
 		lines.append("Worker registration: " + str(d.get("reg", "?")))
@@ -207,11 +212,16 @@ func _update_counts() -> void:
 
 
 func _js_bool(expr: String) -> bool:
-	# eval returns a Variant: a JS boolean arrives as a GDScript bool, and a
-	# failed expression arrives as null. Checking the type first means a
-	# broken expression reads as "no" instead of crashing the comparison.
-	var r: Variant = JavaScriptBridge.eval(expr, true)
-	return r is bool and r
+	# Builds 1-2 returned the JS boolean directly and checked `r is bool`. On
+	# the phone every line that went through here read false -- "Network:
+	# OFFLINE" while on Wi-Fi -- even though the worker was provably active,
+	# while every STRING result (the build 2 diagnostics) came through fine.
+	# Suspected cause: the bridge does not hand JS booleans back as a GDScript
+	# bool, so `is bool` always failed. Rather than depend on that conversion,
+	# make JS produce the text "true"/"false" and compare the text: strings
+	# are the path already shown to work on this phone.
+	var r: Variant = JavaScriptBridge.eval("String(!!(" + expr + "))", true)
+	return r is String and r == "true"
 
 
 func _diag() -> Dictionary:
