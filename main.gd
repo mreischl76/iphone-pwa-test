@@ -9,7 +9,7 @@ extends Control
 # Bump this on every export. It is shown on screen so you can tell whether
 # the phone is running the build you just deployed or an older cached one --
 # the classic PWA failure is a service worker serving yesterday's files.
-const BUILD := 6
+const BUILD := 7
 const SAVE_PATH := "user://save.cfg"
 
 # Build 2 diagnostics. Build 1 only asked "is a service worker controlling
@@ -54,7 +54,14 @@ const DIAG_JS := """
 		window.__pwaApplyUpdate = function () {
 			d.updateRequested = true;
 			navigator.serviceWorker.getRegistration().then(function (r) {
-				if (r && r.waiting) { r.waiting.postMessage('update'); }
+				if (r && r.waiting) {
+					r.waiting.postMessage('update');
+				} else {
+					// Build 7: the patched worker activates by itself, so usually
+					// nothing is waiting -- the new version is already in charge
+					// and a plain reload loads the new build through it.
+					window.location.reload();
+				}
 			});
 		};
 		// Fallback reload. Godot's worker reloads pages via
@@ -66,6 +73,16 @@ const DIAG_JS := """
 		});
 		navigator.serviceWorker.register('index.service.worker.js').then(function (r) {
 			d.register = 'ok';
+			// Build 7: since the patched worker skips the waiting stage, watch
+			// for a new version arriving and finishing activation during this
+			// session -- that is when "new build ready" becomes true.
+			r.addEventListener('updatefound', function () {
+				var nw = r.installing;
+				if (!nw) { return; }
+				nw.addEventListener('statechange', function () {
+					if (nw.state === 'activated') { d.updateReady = true; }
+				});
+			});
 			// Ask the browser to look for a newer worker right now instead of
 			// whenever it gets round to it. Fails harmlessly when offline.
 			return r.update();
@@ -78,7 +95,11 @@ const DIAG_JS := """
 		caches.keys().then(function (keys) {
 			return Promise.all(keys.map(function (k) {
 				return caches.open(k).then(function (c) { return c.keys(); }).then(function (reqs) {
-					return reqs.map(function (q) { return q.url.split('/').pop(); }).join(', ');
+					// Lead with the cache's version stamp (the part after
+					// "cache-"): it changes with every export, so it shows
+					// WHICH build's worker filled this cache.
+					return '[' + k.split('cache-').pop() + '] ' +
+						reqs.map(function (q) { return q.url.split('/').pop(); }).join(', ');
 				});
 			}));
 		}).then(function (lists) {
@@ -250,7 +271,7 @@ func _refresh() -> void:
 		# poll's result and the next one shows this one's. Fine at 3 s.
 		JavaScriptBridge.eval("window.__pwaPoll && window.__pwaPoll()", true)
 		var d := _diag()
-		_update_btn.visible = d.get("waiting", false) == true
+		_update_btn.visible = d.get("waiting", false) == true or d.get("updateReady", false) == true
 		lines.append("iOS: " + str(d.get("ios", "?")))
 		lines.append("Worker registration: " + str(d.get("reg", "?")))
 		lines.append("register() call: " + str(d.get("register", "?")))

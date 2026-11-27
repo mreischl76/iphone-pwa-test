@@ -4,7 +4,7 @@
 // Incrementing CACHE_VERSION will kick off the install event and force
 // previously cached resources to be updated from the network.
 /** @type {string} */
-const CACHE_VERSION = '1795806299|2195106';
+const CACHE_VERSION = '1795806572|2181168';
 /** @type {string} */
 const CACHE_PREFIX = 'iPhone PWA Test-sw-cache-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
@@ -21,7 +21,11 @@ const CACHEABLE_FILES = ["index.wasm","index.pck"];
 const FULL_CACHE = CACHED_FILES.concat(CACHEABLE_FILES);
 
 self.addEventListener('install', (event) => {
-	event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CACHED_FILES)));
+	self.skipWaiting(); // PATCHED by export.py: activate without waiting
+	event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(
+		// PATCHED by export.py: bypass the HTTP cache so a new version
+		// never stores the previous version's files.
+		CACHED_FILES.map((f) => new Request(f, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', (event) => {
@@ -72,7 +76,11 @@ async function fetchAndCache(event, cache, isCacheable) {
 	let response = await event.preloadResponse;
 	if (response == null) {
 		// Or, go over network.
-		response = await self.fetch(event.request);
+		// PATCHED by export.py: non-navigation fetches (index.pck, index.wasm...)
+		// revalidate with the server so a stale HTTP-cache copy is never stored.
+		response = await self.fetch(event.request.mode === 'navigate'
+			? event.request
+			: new Request(event.request, { cache: 'no-cache' }));
 	}
 
 	if (ENSURE_CROSSORIGIN_ISOLATION_HEADERS) {
