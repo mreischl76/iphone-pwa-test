@@ -9,7 +9,7 @@ extends Control
 # Bump this on every export. It is shown on screen so you can tell whether
 # the phone is running the build you just deployed or an older cached one --
 # the classic PWA failure is a service worker serving yesterday's files.
-const BUILD := 3
+const BUILD := 4
 const SAVE_PATH := "user://save.cfg"
 
 # Build 2 diagnostics. Build 1 only asked "is a service worker controlling
@@ -32,17 +32,45 @@ const DIAG_JS := """
 		d.reg = 'API missing';
 		d.register = 'API missing';
 	} else {
-		navigator.serviceWorker.getRegistration().then(function (r) {
-			if (!r) { d.reg = 'none'; return; }
-			var s = [];
-			if (r.active) { s.push('active'); }
-			if (r.waiting) { s.push('waiting'); }
-			if (r.installing) { s.push('installing'); }
-			d.reg = (s.join('+') || 'no worker') + ' @ ' + r.scope;
-		}).catch(function (e) { d.reg = 'error: ' + e; });
-		navigator.serviceWorker.register('index.service.worker.js').then(function () {
+		// Re-queried every few seconds by _refresh(), so a new build being
+		// downloaded in the background shows up without a relaunch.
+		window.__pwaPoll = function () {
+			navigator.serviceWorker.getRegistration().then(function (r) {
+				if (!r) { d.reg = 'none'; d.waiting = false; return; }
+				var s = [];
+				if (r.active) { s.push('active'); }
+				if (r.waiting) { s.push('waiting'); }
+				if (r.installing) { s.push('installing'); }
+				d.reg = (s.join('+') || 'no worker') + ' @ ' + r.scope;
+				d.waiting = !!r.waiting;
+			}).catch(function (e) { d.reg = 'error: ' + e; });
+		};
+		// Build 4: the update path Godot's worker lacks. Its worker is
+		// cache-first, and a newly downloaded worker sits "waiting" until every
+		// page it would take over has closed -- which iOS Home Screen apps never
+		// seemed to satisfy, leaving the phone on build 2 indefinitely. The
+		// worker does accept an 'update' message (skipWaiting + claim + reload),
+		// so the page sends it when the player taps the update button.
+		window.__pwaApplyUpdate = function () {
+			d.updateRequested = true;
+			navigator.serviceWorker.getRegistration().then(function (r) {
+				if (r && r.waiting) { r.waiting.postMessage('update'); }
+			});
+		};
+		// Fallback reload. Godot's worker reloads pages via
+		// WindowClient.navigate(), whose iOS support is unverified; this fires
+		// when the new worker takes control and reloads the page ourselves.
+		// Gated on updateRequested so it can never cause a reload loop.
+		navigator.serviceWorker.addEventListener('controllerchange', function () {
+			if (d.updateRequested) { window.location.reload(); }
+		});
+		navigator.serviceWorker.register('index.service.worker.js').then(function (r) {
 			d.register = 'ok';
+			// Ask the browser to look for a newer worker right now instead of
+			// whenever it gets round to it. Fails harmlessly when offline.
+			return r.update();
 		}).catch(function (e) { d.register = 'FAILED: ' + e; });
+		window.__pwaPoll();
 	}
 	if (!('caches' in window)) {
 		d.cache = 'API missing';
@@ -67,6 +95,7 @@ var _counts: Label
 var _fps: Label
 var _spinner: ColorRect
 var _beep: AudioStreamPlayer
+var _update_btn: Button
 
 
 func _ready() -> void:
@@ -76,10 +105,13 @@ func _ready() -> void:
 
 	if OS.has_feature("web"):
 		JavaScriptBridge.eval(DIAG_JS, true)
-		# The Promises above usually settle within a second; refresh twice so
-		# the answers appear without needing the Refresh button.
-		get_tree().create_timer(1.5).timeout.connect(_refresh)
-		get_tree().create_timer(5.0).timeout.connect(_refresh)
+		# Refresh every 3 s: the Promises above settle a moment after launch,
+		# and a background update download can finish at any time.
+		var poll := Timer.new()
+		poll.wait_time = 3.0
+		poll.autostart = true
+		poll.timeout.connect(_refresh)
+		add_child(poll)
 
 	# Count this launch and save immediately. If the number keeps climbing
 	# across relaunches -- including offline ones -- saves are persisting.
@@ -122,6 +154,16 @@ func _build_ui() -> void:
 	title.text = "iPhone PWA test  (build %d)" % BUILD
 	title.add_theme_font_size_override("font_size", 44)
 	box.add_child(title)
+
+	# Hidden until a newer build has downloaded and is waiting. A button rather
+	# than an automatic reload, because in a real game a reload mid-play would
+	# throw away whatever the player was doing.
+	_update_btn = Button.new()
+	_update_btn.text = "New build ready - tap to load"
+	_update_btn.custom_minimum_size = Vector2(0, 120)
+	_update_btn.visible = false
+	_update_btn.pressed.connect(func() -> void: JavaScriptBridge.eval("window.__pwaApplyUpdate && window.__pwaApplyUpdate()", true))
+	box.add_child(_update_btn)
 
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -180,7 +222,12 @@ func _refresh() -> void:
 		# elsewhere.
 		var probe: Variant = JavaScriptBridge.eval("true", true)
 		lines.append("JS true arrives as: %s (%s)" % [type_string(typeof(probe)), str(probe)])
+		# Kick off a fresh registration query; its answer lands in
+		# window.__pwaDiag in a moment, so this refresh shows the previous
+		# poll's result and the next one shows this one's. Fine at 3 s.
+		JavaScriptBridge.eval("window.__pwaPoll && window.__pwaPoll()", true)
 		var d := _diag()
+		_update_btn.visible = d.get("waiting", false) == true
 		lines.append("iOS: " + str(d.get("ios", "?")))
 		lines.append("Worker registration: " + str(d.get("reg", "?")))
 		lines.append("register() call: " + str(d.get("register", "?")))
