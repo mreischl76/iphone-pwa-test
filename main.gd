@@ -9,7 +9,7 @@ extends Control
 # Bump this on every export. It is shown on screen so you can tell whether
 # the phone is running the build you just deployed or an older cached one --
 # the classic PWA failure is a service worker serving yesterday's files.
-const BUILD := 4
+const BUILD := 5
 const SAVE_PATH := "user://save.cfg"
 
 # Build 2 diagnostics. Build 1 only asked "is a service worker controlling
