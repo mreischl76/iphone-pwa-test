@@ -1,0 +1,30 @@
+; Engine configuration file.
+; Minimal project for testing a Godot 4.6 web export as an offline
+; iPhone Home Screen app (PWA). Not a game -- a diagnostic screen.
+
+config_version=5
+
+[application]
+
+config/name="iPhone PWA Test"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.6", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[display]
+
+; Portrait phone-shaped base resolution. "expand" lets the viewport grow
+; to fill whatever aspect ratio the phone actually has instead of
+; letterboxing, which matters on tall iPhone screens.
+window/size/viewport_width=720
+window/size/viewport_height=1280
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=1
+
+[rendering]
+
+; The web export only supports the Compatibility (WebGL 2) renderer.
+; Forward+ and Mobile are Vulkan-based and have no browser backend.
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
