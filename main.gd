@@ -9,7 +9,7 @@ extends Control
 # Bump this on every export. It is shown on screen so you can tell whether
 # the phone is running the build you just deployed or an older cached one --
 # the classic PWA failure is a service worker serving yesterday's files.
-const BUILD := 5
+const BUILD := 6
 const SAVE_PATH := "user://save.cfg"
 
 # Build 2 diagnostics. Build 1 only asked "is a service worker controlling
@@ -165,40 +165,63 @@ func _build_ui() -> void:
 	_update_btn.pressed.connect(func() -> void: JavaScriptBridge.eval("window.__pwaApplyUpdate && window.__pwaApplyUpdate()", true))
 	box.add_child(_update_btn)
 
-	_status = Label.new()
-	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(_status)
-
-	_counts = Label.new()
-	box.add_child(_counts)
-
-	_fps = Label.new()
-	box.add_child(_fps)
-
-	# The spinner sits in a plain Control, not directly in the VBox: a
-	# container repositions its children every layout pass, which would
-	# fight the rotation. The plain Control just reserves the space.
-	var holder := Control.new()
-	holder.custom_minimum_size = Vector2(0, 160)
-	box.add_child(holder)
-	_spinner = ColorRect.new()
-	_spinner.color = Color("e9c46a")
-	_spinner.size = Vector2(100, 100)
-	_spinner.pivot_offset = Vector2(50, 50)  # rotate about the centre, not the corner
-	_spinner.position = Vector2(30, 30)
-	holder.add_child(_spinner)
+	# Build 6 layout: everything fixed-size goes at the TOP, and the status
+	# text -- which grew with every build until it pushed the buttons off the
+	# bottom of the phone -- goes last, in a ScrollContainer that takes only
+	# the space left over. More lines now means more scrolling, never lost
+	# buttons.
+	var buttons := HBoxContainer.new()
+	buttons.add_theme_constant_override("separation", 20)
+	box.add_child(buttons)
 
 	var tap := Button.new()
 	tap.text = "Tap: count + beep"
-	tap.custom_minimum_size = Vector2(0, 140)
+	tap.custom_minimum_size = Vector2(0, 120)
+	tap.size_flags_horizontal = Control.SIZE_EXPAND_FILL  # share the row evenly
 	tap.pressed.connect(_on_tap)
-	box.add_child(tap)
+	buttons.add_child(tap)
 
 	var refresh := Button.new()
-	refresh.text = "Refresh status"
-	refresh.custom_minimum_size = Vector2(0, 110)
+	refresh.text = "Refresh"
+	refresh.custom_minimum_size = Vector2(0, 120)
+	refresh.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	refresh.pressed.connect(_refresh)
-	box.add_child(refresh)
+	buttons.add_child(refresh)
+
+	var stats := HBoxContainer.new()
+	stats.add_theme_constant_override("separation", 30)
+	box.add_child(stats)
+
+	_counts = Label.new()
+	stats.add_child(_counts)
+
+	_fps = Label.new()
+	stats.add_child(_fps)
+
+	# The spinner sits in a plain Control, not directly in the HBox: a
+	# container repositions its children every layout pass, which would
+	# fight the rotation. The plain Control just reserves the space.
+	var holder := Control.new()
+	holder.custom_minimum_size = Vector2(60, 60)
+	stats.add_child(holder)
+	_spinner = ColorRect.new()
+	_spinner.color = Color("e9c46a")
+	_spinner.size = Vector2(44, 44)
+	_spinner.pivot_offset = Vector2(22, 22)  # rotate about the centre, not the corner
+	_spinner.position = Vector2(8, 8)
+	holder.add_child(_spinner)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL  # take whatever height is left
+	# No sideways scrolling: this forces the label to the container's width,
+	# which is what lets its word-wrap work. Drag up/down to scroll.
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	box.add_child(scroll)
+
+	_status = Label.new()
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_status)
 
 
 func _refresh() -> void:
